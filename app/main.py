@@ -63,6 +63,13 @@ def parse_annotation_selector(selector):
     return result or None
 
 
+def node_disruption_taint_matches(node, taint_keys):
+    if not taint_keys or not node.spec.taints:
+        return set()
+    node_taint_keys = {t.key for t in node.spec.taints}
+    return node_taint_keys & taint_keys
+
+
 def trigger_rollout(apps_v1, namespace, deployment_name, dry_run=False):
     ctx = {"event": "rollout", "namespace": namespace, "deployment": deployment_name}
     if dry_run:
@@ -93,6 +100,12 @@ def monitor_nodes():
     pod_label_selector = os.environ.get("POD_LABEL_SELECTOR") or None
     pod_annotation_selector = parse_annotation_selector(os.environ.get("POD_ANNOTATION_SELECTOR"))
     allowed_namespaces = set(ns.strip() for ns in os.environ["ALLOWED_NAMESPACES"].split(",") if ns.strip()) if os.environ.get("ALLOWED_NAMESPACES") else None
+    disruption_taints = set(k.strip() for k in os.environ["NODE_DISRUPTION_TAINTS"].split(",") if k.strip()) if os.environ.get("NODE_DISRUPTION_TAINTS") else set()
+    disruption_cordoned = os.environ.get("NODE_DISRUPTION_CORDONED", "").strip() in ("1", "true")
+
+    if not disruption_taints and not disruption_cordoned:
+        log.error("at least one of NODE_DISRUPTION_TAINTS or NODE_DISRUPTION_CORDONED must be set", extra={"event": "config_error"})
+        sys.exit(1)
 
     try:
         config.load_incluster_config()
@@ -123,6 +136,8 @@ def monitor_nodes():
         "pod_label_selector": pod_label_selector,
         "pod_annotation_selector": os.environ.get("POD_ANNOTATION_SELECTOR") or None,
         "allowed_namespaces": ",".join(sorted(allowed_namespaces)) if allowed_namespaces else None,
+        "node_disruption_taints": ",".join(sorted(disruption_taints)) or None,
+        "node_disruption_cordoned": disruption_cordoned,
     })
 
     node_sel_ctx = {"node_label_selector": node_label_selector} if node_label_selector else {}
@@ -145,17 +160,22 @@ def monitor_nodes():
             log.debug("node deleted, cleared", extra={"event": "node_cleared", "node": node_name, **node_sel_ctx})
 
         if event_type == "MODIFIED":
-            is_cordoned = node.spec.unschedulable or False
+            cordoned = disruption_cordoned and (node.spec.unschedulable or False)
+            matched_taints = node_disruption_taint_matches(node, disruption_taints)
+            is_disrupted = cordoned or bool(matched_taints)
 
-            log.debug("node check", extra={"event": "node_check", "node": node_name, "cordoned": is_cordoned, **node_sel_ctx})
+            disruption_reasons = ([" cordoned"] if cordoned else []) + ([f"taint:{k}" for k in sorted(matched_taints)])
+            disruption_reason = ",".join(disruption_reasons) if disruption_reasons else None
 
-            if not is_cordoned and node_name in processed_nodes:
+            log.debug("node check", extra={"event": "node_check", "node": node_name, "disrupted": is_disrupted, "disruption_reason": disruption_reason, **node_sel_ctx})
+
+            if not is_disrupted and node_name in processed_nodes:
                 processed_nodes.discard(node_name)
                 log.debug("node uncordoned, cleared", extra={"event": "node_cleared", "node": node_name, **node_sel_ctx})
 
-            if is_cordoned and node_name not in processed_nodes:
+            if is_disrupted and node_name not in processed_nodes:
                 processed_nodes.add(node_name)
-                log.info("target node cordoned", extra={"event": "node_cordoned", "node": node_name, **node_sel_ctx})
+                log.info("target node disrupted", extra={"event": "node_disrupted", "node": node_name, "disruption_reason": disruption_reason, **node_sel_ctx})
 
                 pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}", label_selector=pod_label_selector).items
                 log.debug("pods found", extra={"event": "pods_found", "node": node_name, "count": len(pods), **node_sel_ctx, **pod_sel_ctx})

@@ -18,6 +18,18 @@ docker compose up app
 
 Defined in `requirements.txt`
 
+## Helm Chart
+
+Located in `charts/app/`. Uses [`idp-app`](https://github.com/matuszeman/charts/tree/main/charts/idp-app) as a subchart (aliased as `app`).
+
+RBAC templates are in `charts/app/templates/`:
+- `clusterrole.yaml` — ClusterRole with required permissions (cluster-scoped because nodes are cluster-scoped and pods/deployments span all namespaces)
+- `clusterrolebinding.yaml` — binds the ClusterRole to the ServiceAccount managed by `idp-app`
+
+The ServiceAccount is controlled by `idp-app`:
+- `app.serviceAccount.create: true` to have `idp-app` create it (default: `false`)
+- `app.serviceAccount.name` to override the name (default: `idp-app.fullname` = release name)
+
 ## Kubernetes RBAC Required
 
 The service account running this operator needs:
