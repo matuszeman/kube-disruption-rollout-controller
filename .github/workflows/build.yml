@@ -21,12 +21,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive tag
-        id: tag
-        run: |
-          BRANCH="${GITHUB_REF_NAME//\//-}"
-          SHA="${GITHUB_SHA::7}"
-          echo "value=${BRANCH}-${SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/matuszeman/${{ github.repository }}
+          tags: type=raw,value={{branch}}-{{sha}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -34,5 +33,7 @@ jobs:
           build-contexts: |
             app-src=./app
           target: prod
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/matuszeman/${{ github.repository }}:${{ steps.tag.outputs.value }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

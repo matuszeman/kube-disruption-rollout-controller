@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'app-*'
 
 permissions:
   contents: read
@@ -22,13 +23,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/matuszeman/${{ github.repository }}
+          tags: type=match,pattern=app-(.*),group=1
+
       - uses: docker/build-push-action@v6
         with:
           context: ./devops/containers/app
           build-contexts: |
             app-src=./app
           target: prod
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/matuszeman/${{ github.repository }}:${{ github.event.release.tag_name }}
-            ghcr.io/matuszeman/${{ github.repository }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
