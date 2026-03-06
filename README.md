@@ -33,7 +33,7 @@ NODE_DISRUPTION_CORDONED=1
 Triggers when a node has one or more of the specified taint keys. Karpenter adds a taint before terminating a node, making this the preferred method for Karpenter-managed clusters.
 
 ```
-NODE_DISRUPTION_TAINTS=karpenter.sh/disruption
+NODE_DISRUPTION_TAINTS=karpenter.sh/disrupted
 ```
 
 Multiple taint keys can be specified as a comma-separated list:
@@ -48,7 +48,7 @@ Both can be set simultaneously — any matching condition triggers a rollout.
 
 ```
 NODE_DISRUPTION_CORDONED=1
-NODE_DISRUPTION_TAINTS=karpenter.sh/disruption
+NODE_DISRUPTION_TAINTS=karpenter.sh/disrupted
 ```
 
 ### Karpenter
@@ -56,11 +56,11 @@ NODE_DISRUPTION_TAINTS=karpenter.sh/disruption
 For Karpenter-managed node pools, configure the controller to watch for the disruption taint and optionally scope it to spot nodes:
 
 ```
-NODE_DISRUPTION_TAINTS=karpenter.sh/disruption
+NODE_DISRUPTION_TAINTS=karpenter.sh/disrupted
 NODE_LABEL_SELECTOR=karpenter.sh/capacity-type=spot
 ```
 
-Karpenter (v1) marks nodes for disruption by adding a taint with key `karpenter.sh/disruption` and value `disrupting` before the node is terminated.
+Karpenter (v1) marks nodes for disruption by adding a taint with key `karpenter.sh/disrupted:NoSchedule` before the node is terminated.
 
 ### Node Scoping
 
