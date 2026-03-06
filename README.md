@@ -39,6 +39,22 @@ A PDB with `minAvailable: 1` acts as a safety net: if the rolling update hasn't 
 
 Without a PDB, there is a race between the controller's rollout and the node drain — the pod could be evicted before the new one is ready.
 
+### Readiness Probe
+
+A readiness probe is critical for `maxUnavailable: 0` to be meaningful. Kubernetes considers a pod "ready" only when its readiness probe passes — without one, the new pod is immediately marked ready regardless of whether the application is actually serving traffic, and the old pod is terminated too early.
+
+```yaml
+spec:
+  containers:
+    - name: my-app
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 5
+```
+
 ```yaml
 apiVersion: policy/v1
 kind: PodDisruptionBudget
