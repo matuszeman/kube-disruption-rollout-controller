@@ -24,7 +24,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/matuszeman/${{ github.repository }}
+          images: ghcr.io/${{ github.repository }}
           tags: type=raw,value={{branch}}-{{sha}}
 
       - uses: docker/build-push-action@v6
