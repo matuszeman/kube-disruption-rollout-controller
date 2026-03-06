@@ -1,0 +1,36 @@
+services:
+  app:
+    build:
+      context: ./devops/containers/app
+      target: dev
+      additional_contexts:
+        app-src: ./app
+    volumes:
+      - ./app:/app:ro
+      - ${KUBECONFIG_OVERRIDE:-${KUBECONFIG}}:/config/app/kubeconfig:ro
+      #- ~/.aws:/root/.aws
+    working_dir: /app
+    environment: &app-env
+      KUBECONFIG: /config/app/kubeconfig
+      KUBE_CONTEXT: ${KUBE_CONTEXT:-}
+      KUBE_CTX: ${KUBE_CTX:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-logfmt}
+      DRY_RUN: ${DRY_RUN:-0}
+      NODE_LABEL_SELECTOR: ${NODE_LABEL_SELECTOR:-}
+      POD_LABEL_SELECTOR: ${POD_LABEL_SELECTOR:-}
+      POD_ANNOTATION_SELECTOR: ${POD_ANNOTATION_SELECTOR:-}
+      ALLOWED_NAMESPACES: ${ALLOWED_NAMESPACES:-}
+    command: ["python", "main.py"]
+    #command: sh
+
+  app-prod:
+    build:
+      context: ./devops/containers/app
+      target: prod
+      additional_contexts:
+        app-src: ./app
+    environment: *app-env
+    volumes:
+      - ${KUBECONFIG_OVERRIDE:-${KUBECONFIG}}:/config/app/kubeconfig:ro
+      #- ~/.aws:/root/.aws

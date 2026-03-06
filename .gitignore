@@ -1,0 +1,9 @@
+local
+
+# IDE
+.idea
+.claude
+
+# docker compose
+.env
+compose.override.yaml
