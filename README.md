@@ -14,6 +14,43 @@ Only deployments with **exactly 1 replica** are restarted — multi-replica depl
 
 Node events are consumed via the Kubernetes **watch API** (long-polling), so reactions are immediate rather than periodic.
 
+## Deployment Requirements
+
+For make-before-break to work end-to-end, each target deployment must be configured with a rolling update strategy and a PodDisruptionBudget.
+
+### Rolling Update Strategy
+
+The deployment must use `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`. This ensures Kubernetes schedules and waits for the new pod to be ready *before* terminating the old one.
+
+Without this, Kubernetes may terminate the old pod first (the default `maxUnavailable: 1` allows it), defeating the make-before-break guarantee.
+
+```yaml
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+```
+
+### PodDisruptionBudget
+
+A PDB with `minAvailable: 1` acts as a safety net: if the rolling update hasn't completed before node drain or eviction begins, the PDB blocks eviction until the replacement pod is running on a healthy node.
+
+Without a PDB, there is a race between the controller's rollout and the node drain — the pod could be evicted before the new one is ready.
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: my-app
+```
+
 ## Configuration
 
 ### Detecting Disruption
