@@ -16,7 +16,7 @@ Node events are consumed via the Kubernetes **watch API** (long-polling), so rea
 
 ## Deployment Requirements
 
-For make-before-break to work end-to-end, each target deployment must be configured with a rolling update strategy and a PodDisruptionBudget.
+For make-before-break to work end-to-end, each target deployment must be configured with a rolling update strategy, a readiness probe, and a PodDisruptionBudget.
 
 ### Rolling Update Strategy
 
