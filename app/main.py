@@ -145,7 +145,8 @@ def trigger_rollout(apps_v1, namespace, deployment_name, dry_run=False):
 
 def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_nodes, lock,
                             pod_label_selector, pod_annotation_selector,
-                            allowed_namespaces, dry_run, pod_sel_ctx):
+                            allowed_namespaces, dry_run, pod_sel_ctx,
+                            node_event_taint=None, node_event_taint_remove=False):
     with lock:
         if node_name in processed_nodes:
             log.debug("node already processed", extra={"event": "skip_node", "node": node_name})
@@ -157,8 +158,7 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
     pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}", label_selector=pod_label_selector).items
     log.debug("pods found", extra={"event": "pods_found", "node": node_name, "count": len(pods), **pod_sel_ctx})
 
-    processed_deployments = set()
-
+    eligible_pods = []
     for pod in pods:
         pod_ctx = {"pod": pod.metadata.name, "namespace": pod.metadata.namespace}
 
@@ -176,6 +176,17 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
             if mismatched:
                 log.debug("skip pod: annotation mismatch", extra={"event": "skip_pod", "reason": "annotation_mismatch", "mismatched": str(mismatched), **pod_ctx, **pod_sel_ctx})
                 continue
+
+        eligible_pods.append(pod)
+
+    if node_event_taint and eligible_pods:
+        key, value, effect = node_event_taint
+        apply_node_taint(v1, node_name, key, value, effect, dry_run=dry_run)
+
+    processed_deployments = set()
+
+    for pod in eligible_pods:
+        pod_ctx = {"pod": pod.metadata.name, "namespace": pod.metadata.namespace}
 
         owner = pod.metadata.owner_references[0]
         if owner.kind != "ReplicaSet":
@@ -206,6 +217,10 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
         except Exception as e:
             log.warning("could not process pod", extra={"event": "pod_error", **pod_ctx, "error": str(e)})
 
+    if node_event_taint and node_event_taint_remove and eligible_pods:
+        key, value, effect = node_event_taint
+        remove_node_taint(v1, node_name, key, dry_run=dry_run)
+
     return True
 
 
@@ -220,14 +235,11 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
         node_name = kube_event.involved_object.name
         if reason in node_event_reasons:
             log.info("node event matched", extra={"event": "node_event_match", "node": node_name, "reason": reason})
-            processed = process_disrupted_node(v1, apps_v1, node_name, f"event:{reason}", processed_nodes, lock,
-                                               pod_label_selector, pod_annotation_selector,
-                                               allowed_namespaces, dry_run, pod_sel_ctx)
-            if processed and node_event_taint:
-                key, value, effect = node_event_taint
-                apply_node_taint(v1, node_name, key, value, effect, dry_run=dry_run)
-                if node_event_taint_remove:
-                    remove_node_taint(v1, node_name, key, dry_run=dry_run)
+            process_disrupted_node(v1, apps_v1, node_name, f"event:{reason}", processed_nodes, lock,
+                                   pod_label_selector, pod_annotation_selector,
+                                   allowed_namespaces, dry_run, pod_sel_ctx,
+                                   node_event_taint=node_event_taint,
+                                   node_event_taint_remove=node_event_taint_remove)
 
 
 def monitor_nodes():
