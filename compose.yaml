@@ -8,7 +8,7 @@ services:
     volumes:
       - ./app:/app:ro
       - ${KUBECONFIG_OVERRIDE:-${KUBECONFIG}}:/config/app/kubeconfig:ro
-      #- ~/.aws:/root/.aws
+      - ~/.aws:/root/.aws
     working_dir: /app
     environment: &app-env
       KUBECONFIG: /config/app/kubeconfig
@@ -23,6 +23,9 @@ services:
       ALLOWED_NAMESPACES: ${ALLOWED_NAMESPACES:-}
       NODE_DISRUPTION_CORDONED: ${NODE_DISRUPTION_CORDONED:-}
       NODE_DISRUPTION_TAINTS: ${NODE_DISRUPTION_TAINTS:-}
+      NODE_EVENT_REASONS: ${NODE_EVENT_REASONS:-}
+      NODE_EVENT_TAINT: ${NODE_EVENT_TAINT:-}
+      NODE_EVENT_TAINT_REMOVE: ${NODE_EVENT_TAINT_REMOVE:-}
     command: ["python", "main.py"]
     #command: sh
 
