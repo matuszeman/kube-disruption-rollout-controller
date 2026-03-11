@@ -18,6 +18,14 @@ docker compose up app
 
 Defined in `requirements.txt`
 
+## Configuration
+
+When changing app configuration, update docker compose.yaml, .env.example, and README.md accordingly.
+
+## Dry run
+
+When dry run is enabled `DRY_RUN=1`, the app does not perform any actions but only logs what it would perform.
+
 ## Helm Chart
 
 Located in `charts/app/`. Uses [`idp-app`](https://github.com/matuszeman/charts/tree/main/charts/idp-app) as a subchart (aliased as `app`).
