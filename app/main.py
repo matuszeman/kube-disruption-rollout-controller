@@ -119,8 +119,8 @@ def node_disruption_taint_matches(node, taint_keys):
     return node_taint_keys & taint_keys
 
 
-def trigger_rollout(apps_v1, namespace, deployment_name, dry_run=False):
-    ctx = {"event": "rollout", "namespace": namespace, "deployment": deployment_name}
+def trigger_rollout(apps_v1, namespace, deployment_name, node_name, pod_name, dry_run=False):
+    ctx = {"event": "rollout", "source_node": node_name, "source_pod": pod_name, "namespace": namespace, "deployment": deployment_name}
     if dry_run:
         log.info("dry run: would trigger rollout", extra={**ctx, "dry_run": True})
         return
@@ -208,7 +208,7 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
             if deploy_key not in processed_deployments:
                 deploy = apps_v1.read_namespaced_deployment(deploy_name, ns)
                 if deploy.spec.replicas == 1:
-                    trigger_rollout(apps_v1, ns, deploy_name, dry_run=dry_run)
+                    trigger_rollout(apps_v1, ns, deploy_name, node_name, pod.metadata.name, dry_run=dry_run)
                     processed_deployments.add(deploy_key)
                 else:
                     log.debug("skip deployment: multi-replica", extra={"event": "skip_deployment", "reason": "multi_replica", "namespace": ns, "deployment": deploy_name, "replicas": deploy.spec.replicas})
@@ -227,7 +227,10 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
 def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
                       pod_label_selector, pod_annotation_selector,
                       allowed_namespaces, dry_run, pod_sel_ctx, w,
-                      node_event_taint=None, node_event_taint_remove=False):
+                      node_event_taint=None, node_event_taint_remove=False,
+                      node_event_cooldown_seconds=0, event_cooldown_until=None,
+                      node_label_selector=None):
+    _node_label_cache: dict[str, bool] = {}
     for event in w.stream(v1.list_event_for_all_namespaces,
                           field_selector="involvedObject.kind=Node"):
         kube_event = event['object']
@@ -235,6 +238,34 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
         node_name = kube_event.involved_object.name
         if reason in node_event_reasons:
             log.info("node event matched", extra={"event": "node_event_match", "node": node_name, "reason": reason})
+            if node_label_selector:
+                if node_name not in _node_label_cache:
+                    matching = v1.list_node(
+                        field_selector=f"metadata.name={node_name}",
+                        label_selector=node_label_selector,
+                    ).items
+                    _node_label_cache[node_name] = bool(matching)
+                if not _node_label_cache[node_name]:
+                    log.debug("skip node event: node label selector mismatch",
+                              extra={"event": "skip_node_event", "reason": "label_selector_mismatch",
+                                     "node": node_name, "node_label_selector": node_label_selector})
+                    continue
+            if node_event_cooldown_seconds > 0:
+                with lock:
+                    now = datetime.datetime.utcnow()
+                    if event_cooldown_until[0] and now < event_cooldown_until[0]:
+                        remaining = int((event_cooldown_until[0] - now).total_seconds())
+                        log.debug("event cooldown active, skipping node event",
+                                  extra={"event": "event_cooldown_skip", "node": node_name,
+                                         "reason": reason, "cooldown_remaining_seconds": remaining})
+                        continue
+                    if event_cooldown_until[0] is not None:
+                        log.info("event cooldown ended",
+                                 extra={"event": "event_cooldown_ended", "node": node_name, "reason": reason})
+                    event_cooldown_until[0] = now + datetime.timedelta(seconds=node_event_cooldown_seconds)
+                    log.info("event cooldown started",
+                             extra={"event": "event_cooldown_started", "node": node_name, "reason": reason,
+                                    "cooldown_seconds": node_event_cooldown_seconds})
             process_disrupted_node(v1, apps_v1, node_name, f"event:{reason}", processed_nodes, lock,
                                    pod_label_selector, pod_annotation_selector,
                                    allowed_namespaces, dry_run, pod_sel_ctx,
@@ -258,6 +289,7 @@ def monitor_nodes():
         log.error("invalid NODE_EVENT_TAINT", extra={"event": "config_error", "error": str(e)})
         sys.exit(1)
     node_event_taint_remove = os.environ.get("NODE_EVENT_TAINT_REMOVE", "0").strip() in ("1", "true")
+    node_event_cooldown_seconds = int(os.environ.get("NODE_EVENT_COOLDOWN_SECONDS", "0"))
 
     if not disruption_taints and not disruption_cordoned and not node_event_reasons:
         log.error("at least one of NODE_DISRUPTION_TAINTS, NODE_DISRUPTION_CORDONED, or NODE_EVENT_REASONS must be set", extra={"event": "config_error"})
@@ -299,6 +331,7 @@ def monitor_nodes():
         "node_event_reasons": ",".join(sorted(node_event_reasons)) or None,
         "node_event_taint": node_event_taint_raw or None,
         "node_event_taint_remove": node_event_taint_remove,
+        "node_event_cooldown_seconds": node_event_cooldown_seconds,
     })
 
     node_sel_ctx = {"node_label_selector": node_label_selector} if node_label_selector else {}
@@ -309,6 +342,7 @@ def monitor_nodes():
 
     processed_nodes = set()
     lock = threading.Lock()
+    event_cooldown_until = [None]  # mutable container; protected by lock
 
     if node_event_reasons:
         t = threading.Thread(
@@ -316,7 +350,9 @@ def monitor_nodes():
             args=(v1, apps_v1, node_event_reasons, processed_nodes, lock,
                   pod_label_selector, pod_annotation_selector,
                   allowed_namespaces, dry_run, pod_sel_ctx, w_events),
-            kwargs={"node_event_taint": node_event_taint, "node_event_taint_remove": node_event_taint_remove},
+            kwargs={"node_event_taint": node_event_taint, "node_event_taint_remove": node_event_taint_remove,
+                    "node_event_cooldown_seconds": node_event_cooldown_seconds, "event_cooldown_until": event_cooldown_until,
+                    "node_label_selector": node_label_selector},
             daemon=True,
         )
         t.start()
