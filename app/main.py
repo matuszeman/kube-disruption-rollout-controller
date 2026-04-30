@@ -5,6 +5,7 @@ import datetime
 import logging
 import json
 import threading
+import time
 from kubernetes import client, config, watch
 
 _BUILTIN_FIELDS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__)
@@ -146,7 +147,8 @@ def trigger_rollout(apps_v1, namespace, deployment_name, node_name, pod_name, dr
 def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_nodes, lock,
                             pod_label_selector, pod_annotation_selector,
                             allowed_namespaces, dry_run, pod_sel_ctx,
-                            node_event_taint=None, node_event_taint_remove=False):
+                            node_event_taint=None, node_event_taint_remove=False,
+                            node_event_rollout_delay_seconds=5):
     with lock:
         if node_name in processed_nodes:
             log.debug("node already processed", extra={"event": "skip_node", "node": node_name})
@@ -182,6 +184,9 @@ def process_disrupted_node(v1, apps_v1, node_name, disruption_reason, processed_
     if node_event_taint and eligible_pods:
         key, value, effect = node_event_taint
         apply_node_taint(v1, node_name, key, value, effect, dry_run=dry_run)
+        if node_event_rollout_delay_seconds > 0:
+            log.info("waiting before triggering rollouts", extra={"event": "rollout_delay", "node": node_name, "delay_seconds": node_event_rollout_delay_seconds})
+            time.sleep(node_event_rollout_delay_seconds)
 
     processed_deployments = set()
 
@@ -229,7 +234,7 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
                       allowed_namespaces, dry_run, pod_sel_ctx, w,
                       node_event_taint=None, node_event_taint_remove=False,
                       node_event_cooldown_seconds=0, event_cooldown_until=None,
-                      node_label_selector=None):
+                      node_label_selector=None, node_event_rollout_delay_seconds=5):
     _node_label_cache: dict[str, bool] = {}
     for event in w.stream(v1.list_event_for_all_namespaces,
                           field_selector="involvedObject.kind=Node"):
@@ -237,7 +242,6 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
         reason = kube_event.reason
         node_name = kube_event.involved_object.name
         if reason in node_event_reasons:
-            log.info("node event matched", extra={"event": "node_event_match", "node": node_name, "reason": reason})
             if node_label_selector:
                 if node_name not in _node_label_cache:
                     matching = v1.list_node(
@@ -252,9 +256,11 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
                     continue
             if node_event_cooldown_seconds > 0:
                 with lock:
-                    now = datetime.datetime.utcnow()
+                    now = datetime.datetime.now(datetime.UTC)
                     if event_cooldown_until[0] and now < event_cooldown_until[0]:
                         remaining = int((event_cooldown_until[0] - now).total_seconds())
+                        log.debug("node event matched",
+                                  extra={"event": "node_event_match", "node": node_name, "reason": reason})
                         log.debug("event cooldown active, skipping node event",
                                   extra={"event": "event_cooldown_skip", "node": node_name,
                                          "reason": reason, "cooldown_remaining_seconds": remaining})
@@ -266,11 +272,13 @@ def watch_node_events(v1, apps_v1, node_event_reasons, processed_nodes, lock,
                     log.info("event cooldown started",
                              extra={"event": "event_cooldown_started", "node": node_name, "reason": reason,
                                     "cooldown_seconds": node_event_cooldown_seconds})
+            log.info("node event matched", extra={"event": "node_event_match", "node": node_name, "reason": reason})
             process_disrupted_node(v1, apps_v1, node_name, f"event:{reason}", processed_nodes, lock,
                                    pod_label_selector, pod_annotation_selector,
                                    allowed_namespaces, dry_run, pod_sel_ctx,
                                    node_event_taint=node_event_taint,
-                                   node_event_taint_remove=node_event_taint_remove)
+                                   node_event_taint_remove=node_event_taint_remove,
+                                   node_event_rollout_delay_seconds=node_event_rollout_delay_seconds)
 
 
 def monitor_nodes():
@@ -290,6 +298,7 @@ def monitor_nodes():
         sys.exit(1)
     node_event_taint_remove = os.environ.get("NODE_EVENT_TAINT_REMOVE", "0").strip() in ("1", "true")
     node_event_cooldown_seconds = int(os.environ.get("NODE_EVENT_COOLDOWN_SECONDS", "0"))
+    node_event_rollout_delay_seconds = int(os.environ.get("NODE_EVENT_ROLLOUT_DELAY_SECONDS", "5"))
 
     if not disruption_taints and not disruption_cordoned and not node_event_reasons:
         log.error("at least one of NODE_DISRUPTION_TAINTS, NODE_DISRUPTION_CORDONED, or NODE_EVENT_REASONS must be set", extra={"event": "config_error"})
@@ -332,6 +341,7 @@ def monitor_nodes():
         "node_event_taint": node_event_taint_raw or None,
         "node_event_taint_remove": node_event_taint_remove,
         "node_event_cooldown_seconds": node_event_cooldown_seconds,
+        "node_event_rollout_delay_seconds": node_event_rollout_delay_seconds,
     })
 
     node_sel_ctx = {"node_label_selector": node_label_selector} if node_label_selector else {}
@@ -352,7 +362,7 @@ def monitor_nodes():
                   allowed_namespaces, dry_run, pod_sel_ctx, w_events),
             kwargs={"node_event_taint": node_event_taint, "node_event_taint_remove": node_event_taint_remove,
                     "node_event_cooldown_seconds": node_event_cooldown_seconds, "event_cooldown_until": event_cooldown_until,
-                    "node_label_selector": node_label_selector},
+                    "node_label_selector": node_label_selector, "node_event_rollout_delay_seconds": node_event_rollout_delay_seconds},
             daemon=True,
         )
         t.start()
