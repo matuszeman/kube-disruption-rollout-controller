@@ -4,7 +4,7 @@ A Kubernetes controller that performs **make-before-break rolling restarts** for
 
 ## How It Works
 
-When a node is detected as disrupted (cordoned or tainted), the controller:
+When a node is detected as disrupted (cordoned, tainted, or via a matching Kubernetes Event), the controller:
 
 1. Lists all pods running on that node
 2. Walks the pod → ReplicaSet → Deployment ownership chain
@@ -12,7 +12,7 @@ When a node is detected as disrupted (cordoned or tainted), the controller:
 
 Only deployments with **exactly 1 replica** are restarted — multi-replica deployments survive node disruption naturally via Kubernetes scheduling.
 
-Node events are consumed via the Kubernetes **watch API** (long-polling), so reactions are immediate rather than periodic.
+Node changes and Kubernetes Events are consumed via the Kubernetes **watch API** (long-polling), so reactions are immediate rather than periodic.
 
 ## Deployment Requirements
 
@@ -95,13 +95,62 @@ Multiple taint keys can be specified as a comma-separated list:
 NODE_DISRUPTION_TAINTS=karpenter.sh/disruption,node.kubernetes.io/unschedulable
 ```
 
-**Option C — Combined**
+**Option C — Kubernetes Events (Karpenter `DisruptionBlocked`)**
 
-Both can be set simultaneously — any matching condition triggers a rollout.
+Triggers when a Kubernetes `Event` targeting a node matches one of the configured reasons. Useful for Karpenter clusters where the controller emits a `DisruptionBlocked` event when it cannot drain a node because a single-replica pod without a PDB is blocking disruption. Reacting to this event moves the pod proactively, unblocking Karpenter's disruption flow.
+
+```
+NODE_EVENT_REASONS=DisruptionBlocked
+```
+
+Multiple reasons can be specified as a comma-separated list:
+
+```
+NODE_EVENT_REASONS=DisruptionBlocked,DisruptionDenied
+```
+
+**Option C — Node Event Taint**
+
+When using `NODE_EVENT_REASONS`, optionally apply a taint to the matched node at the time the rollout is triggered. This prevents new pods from being scheduled on the node during the rollout, and can also integrate with `NODE_DISRUPTION_TAINTS` if the same taint key is configured there.
+
+```
+NODE_EVENT_TAINT=karpenter.sh/disrupted:NoSchedule
+```
+
+To remove the taint after the rollout is triggered:
+
+```
+NODE_EVENT_TAINT_REMOVE=1
+```
+
+When `NODE_EVENT_TAINT` is set, there is a brief delay between applying the taint and triggering rollouts so the scheduler has time to stop placing new pods on the node. The default is 5 seconds; adjust with:
+
+```
+NODE_EVENT_ROLLOUT_DELAY_SECONDS=5
+```
+
+Set to `0` to trigger rollouts immediately after tainting.
+
+All three settings are ignored unless `NODE_EVENT_REASONS` is set.
+
+**Cooldown between event-based disruptions**
+
+When multiple nodes emit matching events simultaneously, all of them would normally be processed at once. To avoid a wave of simultaneous rollouts, set `NODE_EVENT_COOLDOWN_SECONDS` to a positive integer. After the first node event is processed, all further event-based disruptions are skipped until the cooldown expires. Skipped events are logged with `event=event_cooldown_skip`.
+
+```
+NODE_EVENT_COOLDOWN_SECONDS=1800
+```
+
+The cooldown is global (across all nodes) and applies only to event-based disruptions (`NODE_EVENT_REASONS`). Taint/cordon-based disruptions are unaffected.
+
+**Option D — Combined**
+
+All options can be set simultaneously — any matching condition triggers a rollout.
 
 ```
 NODE_DISRUPTION_CORDONED=1
 NODE_DISRUPTION_TAINTS=karpenter.sh/disrupted
+NODE_EVENT_REASONS=DisruptionBlocked
 ```
 
 ### Karpenter
@@ -177,16 +226,21 @@ ALLOWED_NAMESPACES=default,production
 
 ## Environment Variables Reference
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `NODE_DISRUPTION_CORDONED` | one of these two | — | Set to `1` to treat unschedulable (cordoned) nodes as disrupted |
-| `NODE_DISRUPTION_TAINTS` | one of these two | — | Comma-separated taint keys that signal node disruption |
-| `NODE_LABEL_SELECTOR` | No | — | Kubernetes label selector to scope which nodes are watched |
-| `POD_LABEL_SELECTOR` | No | — | Label selector to filter which pods trigger rollouts |
-| `POD_ANNOTATION_SELECTOR` | No | — | Annotation selector (`key=value,...`) to filter pods |
-| `ALLOWED_NAMESPACES` | No | — | Comma-separated list of namespaces; restricts rollouts to these only |
-| `DRY_RUN` | No | `0` | Set to `1` to log what would happen without patching deployments |
-| `LOG_LEVEL` | No | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| Variable                           | Required           | Default | Description                                                                                                      |
+|------------------------------------|--------------------|---------|------------------------------------------------------------------------------------------------------------------|
+| `NODE_DISRUPTION_CORDONED`         | one of these three | —       | Set to `1` to treat unschedulable (cordoned) nodes as disrupted                                                  |
+| `NODE_DISRUPTION_TAINTS`           | one of these three | —       | Comma-separated taint keys that signal node disruption                                                           |
+| `NODE_EVENT_REASONS`               | one of these three | —       | Comma-separated Kubernetes Event reasons to react to (e.g. `DisruptionBlocked`)                                  |
+| `NODE_EVENT_TAINT`                 | No                 | —       | Taint to apply to the node on event match. Format: `key:Effect` or `key=value:Effect` (e.g. `karpenter.sh/disrupted:NoSchedule`) |
+| `NODE_EVENT_TAINT_REMOVE`          | No                 | `0`     | Set to `1` to remove the taint after the rollout is triggered                                                    |
+| `NODE_EVENT_ROLLOUT_DELAY_SECONDS` | No                 | `5`     | Seconds to wait after applying the taint before triggering rollouts. Set to `0` to trigger immediately.          |
+| `NODE_EVENT_COOLDOWN_SECONDS`      | No                 | `0`     | Seconds to block further event-based disruptions after processing the first one. Set to e.g. `1800` for 30 min. |
+| `NODE_LABEL_SELECTOR`              | No                 | —       | Kubernetes label selector to scope which nodes are watched                                                       |
+| `POD_LABEL_SELECTOR`               | No                 | —       | Label selector to filter which pods trigger rollouts                                                             |
+| `POD_ANNOTATION_SELECTOR`          | No                 | —       | Annotation selector (`key=value,...`) to filter pods                                                             |
+| `ALLOWED_NAMESPACES`               | No                 | —       | Comma-separated list of namespaces; restricts rollouts to these only                                             |
+| `DRY_RUN`                          | No                 | `0`     | Set to `1` to log what would happen without patching deployments                                                 |
+| `LOG_LEVEL`                        | No                 | `INFO`  | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`)                                                                  |
 | `LOG_FORMAT` | No | `logfmt` | Log format (`logfmt` or `json`) |
 | `KUBECONFIG` | No | — | Path to kubeconfig file (for local development) |
 | `KUBE_CONTEXT` | No | — | Kubeconfig context to use (for local development) |
